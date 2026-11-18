@@ -1,12 +1,13 @@
-// gta6-twitch-ccu-forecast-01 entry (Node 22, standard library only): forecast GTA VI's
+// gta6-twitch-ccu-forecast-01 entry, v2 (Node 22, standard library only): forecast GTA VI's
 // release-day Twitch concurrent viewers (CCU), hours 2..24 of 2026-11-19 UTC, as five
 // quantiles per hour, from the case file alone. No network, no clock, no randomness:
 // the same case file in writes a byte-identical forecast out.
 //
-// Model (fitted and validated on the kit's four practice launches, whose real release-day
-// hourly counts were fetched from SullyGnome, the same source the kit's comparables come
-// from; the practice answers match each case's hour-1 print exactly, so the harness and
-// the competition's own pinball loss on the log scale are verified end to end):
+// Model (v2 builds on v1, which is already accepted; the change is the spread — see below.
+// Validated on the kit's four practice launches, whose real release-day hourly counts were
+// fetched from SullyGnome, the same source the kit's comparables come from; the practice
+// answers match each case's hour-1 print exactly, so the harness and the competition's own
+// pinball loss on the log scale are verified end to end):
 //
 //   - Launch days do NOT stay flat: hour 1 (00:00-01:00 UTC) catches only the earliest
 //     midnight-local unlocks (New Zealand, Australia, then the UK), while the US east
@@ -23,11 +24,22 @@
 //     bandwidth 1.0 log units), with console-only launches (platforms with no "PC")
 //     weighted x2 — GTA VI is console-only (PS5 / Xbox Series X|S), and console-only
 //     rolling-midnight launches are its closest kin.
-//   - Spread: the kernel-weighted standard deviation of the log-ratios around that
-//     median at each hour (floor 0.15, cap 1.5 log units) — an honest spread, since the
-//     pinball loss punishes both too-narrow and too-wide bands. Quantiles:
-//     q_tau(h) = p1 * exp(median_h + z_tau * spread_h), z = (-1.645, -0.674, 0,
-//     0.674, 1.645), rounded to 2 decimals.
+//   - Spread, v2 change: v1 put ONE symmetric normal spread (the kernel-weighted SD) on
+//     both sides of the median. That is the wrong shape for these ratios: across the
+//     comparable pool itself, the log-ratios are strongly right-skewed at every hour
+//     (skew +1.3 to +2.3, mean well above the median, worst downside about -1.4 log
+//     units against upside explosions up to +7.5). A symmetric spread therefore prices
+//     the lower tail too wide and the upper tail too narrow — and the pinball loss
+//     punishes both mistakes. v2 instead takes two one-sided spreads: the
+//     kernel-weighted semi-deviation of the ratios at or below the median (the lower
+//     spread) and of the ratios at or above it (the upper spread), each floored at
+//     0.15 and capped at 1.5 log units, the same floor and cap v1 used. Quantiles:
+//     q_tau(h) = p1 * exp(median_h + z_tau * spread_h(tau)), z = (-1.645, -0.674, 0,
+//     0.674, 1.645), where spread_h(tau) is the lower spread for tau < 0.5, the upper
+//     spread for tau > 0.5, and the median itself at tau = 0.5. No number was fitted to
+//     the practice answers: both spreads are computed from the case's own comparables
+//     at run time, and the floor/cap are v1's unchanged constants. The median, kernel,
+//     console boost and fallbacks are exactly v1's.
 //   - Fallbacks: an hour with fewer than 3 comparables carrying data falls back to the
 //     house baseline's persistence shape for that hour; with no usable comparables at
 //     all the whole forecast is the baseline. A comparable whose release day is in the
@@ -36,23 +48,26 @@
 //
 // Backtest (competition pinball loss, log scale, mean over 4 practice cases; lower better):
 //   house baseline (persistence):  0.3871  [0.744 Wolverine, 0.287 RDR2, 0.215 GOW, 0.303 SM2]
-//   this model:                    0.2191  [0.361 Wolverine, 0.194 RDR2, 0.133 GOW, 0.189 SM2]
-//   i.e. it beats the baseline on every practice case, by 0.17 nats on average. The
-//   TypeScript entry itself was run on the four practice cases and reproduces those
-//   numbers exactly (mean 0.2191; 90% coverage 1.00, 1.00, 1.00, 0.83), and two runs
-//   are byte-identical. The
-//   kernel family is stable, not a knife-edge pick: bandwidth 0.7 -> 0.228, 1.5 -> 0.254,
-//   no console boost -> 0.234. A per-hour linear regression on log(hour 1) was tried and
-//   rejected: it wins Wolverine (0.217) but loses on God of War (0.228) and Spider-Man 2
-//   (0.285) — unstable across cases, so the robust weighted median is used instead.
+//   v1 (symmetric spread):         0.2191  [0.361 Wolverine, 0.194 RDR2, 0.133 GOW, 0.189 SM2]
+//   v2 (asymmetric spread):        0.2078  [0.323 Wolverine, 0.191 RDR2, 0.125 GOW, 0.192 SM2]
+//   i.e. v2 beats v1 on three of the four practice cases (Wolverine -0.038, RDR2 -0.002,
+//   God of War -0.008) and is a touch worse on Spider-Man 2 (+0.003). The TypeScript
+//   entry itself was run on the four practice cases and reproduces those numbers exactly
+//   (90% coverage 1.00, 0.96, 1.00, 0.83), and two runs are byte-identical. Variants
+//   tried and rejected on the same four cases: IQR-based (robust) spread 0.227, empirical
+//   weighted quantiles 0.242, smoothing the median profile 0.220, shrinking the spread
+//   toward the pooled cross-hour spread 0.220, adding hour-1 channels as a second kernel
+//   dimension 0.208 (a 0.00005 gain — noise, not worth the extra dimension), widening
+//   the upper cap to 2.0/2.5 (no change — the cap never binds).
 //
 // Caveats, stated plainly: the practice is graded on past launches anyone can look up
 // and pays nothing, so a practice score is no guide to the final (the rules say so too).
-// The final's hour 1 will be GTA VI's own print, which no comparable can foresee; the
-// model adapts to whatever it is through the kernel, but if hour 1 lands far outside
-// every comparable's hour-1 range the kernel still returns a sane median (weights never
-// vanish). GTA VI is the biggest launch in the set, so its evening peak may exceed every
-// comparable's ratio — the spread term is what prices that risk.
+// Four practice cases is a small sample, and v2's gain over v1 is modest (-0.011 on
+// average); the final's hour 1 will be GTA VI's own print, which no comparable can
+// foresee, and the final score is only revealed after platform judging. The asymmetric
+// spread is adopted because the skew it corrects is measured in the comparable pool
+// itself, not because four practice numbers say so — but the final could still land
+// either side of v1.
 //
 // Outside the grader's container, MAKEFUN_INPUT_DIR and MAKEFUN_OUTPUT_DIR stand in for
 // /input and /output:
@@ -76,7 +91,8 @@ const KERNEL_BANDWIDTH = 1.0;
 const CONSOLE_BOOST = 2.0;
 /** Minimum comparables carrying an hour's data before the kernel profile is trusted. */
 const MIN_COMPARABLES = 3;
-/** Floor / cap on the per-hour log spread (the kernel-weighted SD around the median). */
+/** Floor / cap on each one-sided log spread (the same constants v1 used for its
+ *  single symmetric spread). */
 const SPREAD_FLOOR = 0.15;
 const SPREAD_CAP = 1.5;
 /** House baseline spread, used only as a fallback (see header). */
@@ -123,6 +139,24 @@ function weightedSd(pairs: Array<{ value: number; weight: number }>, centre: num
   if (total <= 0) return SPREAD_FLOOR;
   const variance = pairs.reduce((s, p) => s + p.weight * (p.value - centre) * (p.value - centre), 0) / total;
   return Math.sqrt(Math.max(0, variance));
+}
+
+/**
+ * One-sided weighted spread around `centre`: the semi-deviation of the values on one
+ * side of it. For a symmetric distribution each side's semi-deviation equals the full
+ * SD; for the right-skewed launch-day log-ratios the lower side comes out smaller
+ * and the upper side larger, which is exactly the asymmetry the pinball loss prices.
+ * A side with fewer than 2 pairs falls back to the full SD so the estimate never
+ * rests on a single point. The result is floored and capped like v1's spread.
+ */
+function oneSidedSpread(
+  pairs: Array<{ value: number; weight: number }>,
+  centre: number,
+  side: 'below' | 'above',
+): number {
+  const oneSide = pairs.filter((p) => (side === 'below' ? p.value <= centre : p.value >= centre));
+  const sd = oneSide.length >= 2 ? weightedSd(oneSide, centre) : weightedSd(pairs, centre);
+  return Math.min(SPREAD_CAP, Math.max(SPREAD_FLOOR, sd));
 }
 
 /** The persistence (house baseline) quantiles for one hour, used only as a fallback. */
@@ -183,8 +217,12 @@ function forecastCase(c: Case): { hours: Array<{ hour: number; q: number[] }> } 
     }
     if (pairs.length < MIN_COMPARABLES) return { hour, q: baselineQuantiles(p1, hour) };
     const median = weightedMedian(pairs);
-    const spread = Math.min(SPREAD_CAP, Math.max(SPREAD_FLOOR, weightedSd(pairs, median)));
-    const q = Z.map((z) => round2(Math.min(1e9, Math.max(1, p1 * Math.exp(median + z * spread)))));
+    const spreadLo = oneSidedSpread(pairs, median, 'below');
+    const spreadHi = oneSidedSpread(pairs, median, 'above');
+    const q = Z.map((z) => {
+      const spread = z < 0 ? spreadLo : z > 0 ? spreadHi : 0;
+      return round2(Math.min(1e9, Math.max(1, p1 * Math.exp(median + z * spread))));
+    });
     // Rounding can only keep the order (exp is monotone in z); enforce it anyway.
     for (let i = 1; i < q.length; i++) if (q[i]! < q[i - 1]!) q[i] = q[i - 1]!;
     return { hour, q };
